@@ -21,8 +21,28 @@ fn main() {
     }
 }
 
+// ----- Game Flow -----
 
-#[derive(Debug)]
+struct Prediction {
+    flow: Vec<GameState>,
+}
+
+impl Prediction {
+    fn new() -> Prediction {
+        Prediction { flow: vec![] }
+    }
+    fn make(start: &GameState, strategy: fn(&GameState) -> Player) -> Prediction {
+        let mut pred = Prediction::new();
+        pred.flow.push(start.simulate(strategy));
+        // TODO: calc all possible
+        pred
+    }
+}
+
+
+// ----- Game State -----
+
+#[derive(Debug, Clone)]
 struct GameState {
     player: Player,
     humans: Vec<Human>,
@@ -34,8 +54,16 @@ impl GameState {
         GameState { player, humans, zombies }
     }
 
+    fn simulate(&self, strategy: fn(&GameState) -> Player) -> GameState {
+        let mut next_state = self.clone();
+        next_state.player = strategy(&self);
+        // TODO: make calculations
+        next_state
+    }
+
     // TODO: test
     fn calc_zombie_targets(&mut self) {
+        // TODO: fix mutable/immutable borrows
         self.zombies.iter_mut().for_each(|x| x.set_closest_human(&self));
     }
 }
@@ -43,27 +71,37 @@ impl GameState {
 
 
 // ----- Move logic -----
-fn calculate_next_move(state: &GameState) -> Move {
-    return Move::new(state.humans[0].x, state.humans[0].y)
+fn calculate_next_move(state: &GameState) -> Player {
+    return Player::new(state.humans[0].x, state.humans[0].y)
 }
 
-struct Move {
+
+
+// ----- Player -----
+
+#[derive(Debug, Clone)]
+struct Player {
     x: i32,
     y: i32,
     msg: String,
 }
 
-impl Move {
+impl Player {
     fn new(x: i32, y: i32) -> Self {
-        Move { x, y, msg: "".to_string() }
+        Player { x, y, msg: "".to_string() }
     }
 
     fn new_labeled(x: i32, y: i32, label: &str) -> Self {
-        Move { x, y, msg: label.to_string() }
+        Player { x, y, msg: label.to_string() }
+    }
+
+    fn from_stdin() -> Self {
+        let input = parse_line();
+        Player::new(input[0], input[1])
     }
 }
 
-impl Display for Move {
+impl Display for Player {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.msg.is_empty() {
             write!(f, "{} {}", self.x, self.y)
@@ -75,26 +113,9 @@ impl Display for Move {
 
 
 
-// ----- Player -----
-
-#[derive(Debug)]
-struct Player {
-    x: i32,
-    y: i32,
-}
-
-impl Player {
-    fn from_stdin() -> Self {
-        let input = parse_line();
-        Player { x: input[0], y: input[1] }
-    }
-}
-
-
-
 // ----- Humans -----
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct Human {
     id: i32,
     x: i32,
@@ -126,7 +147,7 @@ fn parse_humans() -> Vec<Human> {
 
 // ----- Zombies -----
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct Zombie {
     id: i32,
     x: i32,
@@ -172,7 +193,7 @@ fn parse_zombies() -> Vec<Zombie> {
     res
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum Target {
     Player,         // the player
     Human(usize),   // human idx
