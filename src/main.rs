@@ -135,7 +135,7 @@ struct Zombie {
     y: i32,
     next_x: i32,
     next_y: i32,
-    target_idx: usize,
+    target: Target,
 }
 
 impl Zombie {
@@ -147,7 +147,19 @@ impl Zombie {
             y: input[2],
             next_x: input[3],
             next_y: input[4],
-            target_idx: 0,
+            target: Target::Player,
+        }
+    }
+
+    fn set_closest_human(&mut self, state: &GameState) {
+        let mut sq_dist = dist_squared(self.next_x, self.next_y, state.player.x, state.player.y);
+        self.target = Target::Player;
+        for (idx, human) in state.humans.iter().enumerate() {
+            let curr_dist = dist_squared(self.next_x, self.next_y, human.x, human.y);
+            if curr_dist < sq_dist {
+                sq_dist = curr_dist;
+                self.target = Target::Human(idx);
+            }
         }
     }
 }
@@ -162,6 +174,11 @@ fn parse_zombies() -> Vec<Zombie> {
     res
 }
 
+#[derive(Debug)]
+enum Target {
+    Player,         // the player
+    Human(usize),   // human idx
+}
 
 
 // ----- Utils -----
@@ -181,21 +198,6 @@ fn read_line_as_i32() -> i32 {
     let mut input_line = String::new();
     io::stdin().read_line(&mut input_line).unwrap();
     atoi(&input_line)
-}
-
-fn closest_human_idx(x: i32, y: i32, humans: &Vec<Human>) -> usize {
-    let mut idx = 0usize;
-    let mut sq_dist = i32::MAX;
-
-    for (i, human) in humans.iter().enumerate() {
-        let curr_dist = dist_squared(x, y, human.x, human.y);
-        if curr_dist < sq_dist {
-            idx = i;
-            sq_dist = sq_dist;
-        }
-    }
-
-    idx
 }
 
 fn dist_squared(x1: i32, y1: i32, x2: i32, y2: i32) -> i32 {
