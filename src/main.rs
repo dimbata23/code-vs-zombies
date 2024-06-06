@@ -9,24 +9,44 @@ use std::io;
 fn main() {
     // game loop
     loop {
-        let player = Player::from_stdin();
-        let humans = parse_humans();
-        let zombies = parse_zombies();
+        let state = GameState {
+            player: Player::from_stdin(),
+            humans: parse_humans(),
+            zombies: parse_zombies(),
+        };
+        eprintln!("{:?}", state);
 
-        eprintln!("{:?}", player);
-        eprintln!("{:?}", humans);
-        eprintln!("{:?}", zombies);
-
-        let next_move = calculate_next_move(player, &humans, &zombies);
+        let next_move = calculate_next_move(&state);
         println!("{}", next_move)
+    }
+}
+
+
+#[derive(Debug)]
+struct GameState {
+    player: Player,
+    humans: Vec<Human>,
+    zombies: Vec<Zombie>,
+}
+
+impl GameState {
+    fn new(player: Player, humans: Vec<Human>, zombies: Vec<Zombie>) -> Self {
+        GameState { player, humans, zombies }
+    }
+
+    // TODO: test
+    fn calc_zombie_targets(&mut self) {
+        for zombie in &mut self.zombies {
+            zombie.target_idx = closest_human_idx(zombie.next_x, zombie.next_y, &self.humans);
+        }
     }
 }
 
 
 
 // ----- Move logic -----
-fn calculate_next_move(player: Player, humans: &Vec<Human>, zombies: &Vec<Zombie>) -> Move {
-    return Move::new(humans[0].x, humans[0].y)
+fn calculate_next_move(state: &GameState) -> Move {
+    return Move::new(state.humans[0].x, state.humans[0].y)
 }
 
 struct Move {
@@ -54,6 +74,8 @@ impl Display for Move {
         }
     }
 }
+
+
 
 // ----- Player -----
 
@@ -113,6 +135,7 @@ struct Zombie {
     y: i32,
     next_x: i32,
     next_y: i32,
+    target_idx: usize,
 }
 
 impl Zombie {
@@ -124,6 +147,7 @@ impl Zombie {
             y: input[2],
             next_x: input[3],
             next_y: input[4],
+            target_idx: 0,
         }
     }
 }
@@ -149,12 +173,35 @@ fn atoi(str: &str) -> i32 {
 fn parse_line() -> Vec<i32> {
     let mut input_line = String::new();
     io::stdin().read_line(&mut input_line).unwrap();
-    let strs = input_line.split(" ").collect::<Vec<_>>();
-    strs.into_iter().map(atoi).collect()
+    let strings = input_line.split(" ").collect::<Vec<_>>();
+    strings.into_iter().map(atoi).collect()
 }
 
 fn read_line_as_i32() -> i32 {
     let mut input_line = String::new();
     io::stdin().read_line(&mut input_line).unwrap();
     atoi(&input_line)
+}
+
+fn closest_human_idx(x: i32, y: i32, humans: &Vec<Human>) -> usize {
+    let mut idx = 0usize;
+    let mut sq_dist = i32::MAX;
+
+    for (i, human) in humans.iter().enumerate() {
+        let curr_dist = dist_squared(x, y, human.x, human.y);
+        if curr_dist < sq_dist {
+            idx = i;
+            sq_dist = sq_dist;
+        }
+    }
+
+    idx
+}
+
+fn dist_squared(x1: i32, y1: i32, x2: i32, y2: i32) -> i32 {
+    (x1-x2) * (x1-x2) + (y1-y2) * (y1-y1)
+}
+
+fn dist(x1: i32, y1: i32, x2: i32, y2: i32) -> f32 {
+    (dist_squared(x1, y1, x2, y2) as f32).sqrt()
 }
