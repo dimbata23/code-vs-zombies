@@ -36,9 +36,7 @@ impl GameState {
 
     // TODO: test
     fn calc_zombie_targets(&mut self) {
-        for zombie in &mut self.zombies {
-            zombie.target_idx = closest_human_idx(zombie.next_x, zombie.next_y, &self.humans);
-        }
+        self.zombies.iter_mut().for_each(|x| x.set_closest_human(&self));
     }
 }
 
