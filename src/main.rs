@@ -8,7 +8,15 @@ use std::io;
  * Save humans, destroy zombies!
  **/
 fn main() {
-    let mut last_prediction = None;
+    let state = GameState {
+        player: Player::from_stdin(),
+        humans: parse_humans(),
+        zombies: parse_zombies(),
+    };
+
+    let mut prediction = Prediction::make(&state, calculate_next_move);
+    let mut last_state_prediction = prediction.next();
+    println!("{}", last_state_prediction.unwrap_or(&GameState::empty()).player);
 
     // game loop
     loop {
@@ -19,15 +27,14 @@ fn main() {
         };
 
         eprintln!("Current : {}", state);
-        if let Some(pred_state) = &last_prediction {
-            eprintln!("Pred was: {}", *pred_state);
-            eprintln!("{}", *pred_state == state);
+        if let Some(prev_pred_state) = last_state_prediction {
+            eprintln!("Pred was: {}", *prev_pred_state);
+            eprintln!("{}", *prev_pred_state == state);
         }
 
-        last_prediction = Some(state.simulate(calculate_next_move));
+        last_state_prediction = prediction.next();
 
-        let next_move = calculate_next_move(&state);
-        println!("{}", next_move)
+        println!("{}", &last_state_prediction.unwrap_or(&GameState::empty()).player);
     }
 }
 
@@ -35,17 +42,29 @@ fn main() {
 
 struct Prediction {
     flow: Vec<GameState>,
+    idx: usize,
 }
 
 impl Prediction {
     fn new() -> Prediction {
-        Prediction { flow: vec![] }
+        Prediction { flow: vec![], idx: 0 }
     }
     fn make(start: &GameState, strategy: fn(&GameState) -> Player) -> Prediction {
         let mut pred = Prediction::new();
         pred.flow.push(start.simulate(strategy));
-        // TODO: calc all possible
+        while !pred.flow.last().unwrap().ended() {
+            pred.flow.push(pred.flow.last().unwrap().simulate(strategy))
+        }
         pred
+    }
+
+    fn next(&mut self) -> Option<&GameState> {
+        if self.idx >= self.flow.len() {
+            None
+        } else {
+            self.idx += 1;
+            Some(&self.flow[self.idx - 1])
+        }
     }
 }
 
@@ -72,6 +91,10 @@ impl Display for GameState {
 impl GameState {
     fn new(player: Player, humans: Vec<Human>, zombies: Vec<Zombie>) -> Self {
         GameState { player, humans, zombies }
+    }
+
+    fn empty() -> GameState {
+        GameState { player: Player::new_labeled(0, 0, "???"), humans: vec![], zombies: vec![] }
     }
 
     fn simulate(&self, strategy: fn(&GameState) -> Player) -> GameState {
@@ -108,6 +131,10 @@ impl GameState {
         let mut new_humans = self.humans.clone();  // old compilers :((((
         new_humans.iter_mut().for_each(|h| h.check_within_zombie(&self.zombies));
         self.humans = new_humans.iter().filter(|h| !h.dead).cloned().collect();
+    }
+
+    fn ended(&self) -> bool {
+        self.humans.is_empty() || self.zombies.is_empty()
     }
 }
 
