@@ -3,6 +3,7 @@
 use std::cmp::PartialEq;
 use std::fmt::{Display, Formatter};
 use std::io;
+use std::ops::{Add, AddAssign, Mul, MulAssign, Sub};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /**
@@ -88,7 +89,7 @@ struct GameState {
 
 impl Display for GameState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut res = write!(f, "P: ({}, {}), {}H, {}Z: ", self.player.x, self.player.y, self.humans.len(), self.zombies.len());
+        let mut res = write!(f, "P: ({}), {}H, {}Z: ", self.player.pos, self.humans.len(), self.zombies.len());
         for zombie in &self.zombies {
             res = res.and(write!(f, "{} ", zombie));
         }
@@ -102,7 +103,7 @@ impl GameState {
     }
 
     fn empty() -> GameState {
-        GameState { player: Player::new_labeled(0, 0, "???"), humans: vec![], zombies: vec![] }
+        GameState { player: Player::new_labeled(Vec2::new(), "???"), humans: vec![], zombies: vec![] }
     }
 
     fn simulate(&self, strategy: fn(&GameState) -> Player) -> GameState {
@@ -110,7 +111,7 @@ impl GameState {
         next_state.clear_targets();
         next_state.zombies_set_targets();
         let player_target = strategy(&next_state);
-        (next_state.player.x, next_state.player.y) = move_from_to_capped((next_state.player.x, next_state.player.y), (player_target.x, player_target.y), PLAYER_STEP);
+        next_state.player.pos = move_from_to_capped(next_state.player.pos, player_target.pos, PLAYER_STEP);
         next_state.player.msg = player_target.msg;
         next_state.move_zombies();
         next_state.kill_zombies();
@@ -140,7 +141,7 @@ impl GameState {
 
     fn move_zombies(&mut self) {
         for zombie in &mut self.zombies {
-            (zombie.x, zombie.y) = (zombie.next_x, zombie.next_y);
+            zombie.pos = zombie.next_pos;
         }
     }
 
@@ -171,13 +172,15 @@ struct Strategy;
 
 impl Strategy {
     fn stay_still(state: &GameState) -> Player {
-        Player { x: state.player.x, y: state.player.y, msg: "Zzz...".to_string() }
+        Player { pos: state.player.pos, msg: "Zzz...".to_string() }
     }
 
     fn random_pos(_: &GameState) -> Player {
         Player {
-            x: rand_in_range(0, MAX_X),
-            y: rand_in_range(0, MAX_Y),
+            pos: Vec2 {
+                x: rand_in_range(0, MAX_X),
+                y: rand_in_range(0, MAX_Y),
+            },
             msg: "Random Bullshit Go!!!".to_string()
         }
     }
@@ -202,15 +205,15 @@ impl Strategy {
                 if let Some(z_idx) = h.targeted_by {
                     state.zombies[z_idx].target_dist_sq
                 } else {
-                    dist_squared((h.x, h.y), (state.player.x, state.player.y))
+                    dist_squared(h.pos, state.player.pos)
                 }
             }
         );
 
         if let Some(h) = closest_human {
-            Player::new_labeled(h.x, h.y, msg)
+            Player::new_labeled(h.pos, msg)
         } else {
-            Player::new_labeled(state.player.x, state.player.y, msg)
+            Player::new_labeled(state.player.pos, msg)
         }
     }
 }
@@ -223,39 +226,38 @@ const PLAYER_STEP: i32 = 1000;
 
 #[derive(Debug, Clone)]
 struct Player {
-    x: i32,
-    y: i32,
+    pos: Vec2,
     msg: String,
 }
 
 impl Player {
-    fn new(x: i32, y: i32) -> Self {
-        Player { x, y, msg: "".to_string() }
+    fn new(pos: Vec2) -> Self {
+        Player { pos, msg: "".to_string() }
     }
 
-    fn new_labeled(x: i32, y: i32, label: &str) -> Self {
-        Player { x, y, msg: label.to_string() }
+    fn new_labeled(pos: Vec2, label: &str) -> Self {
+        Player { pos, msg: label.to_string() }
     }
 
     fn from_stdin() -> Self {
         let input = parse_line();
-        Player::new(input[0], input[1])
+        Player::new(Vec2 {x: input[0], y: input[1]})
     }
 }
 
 impl Display for Player {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.msg.is_empty() {
-            write!(f, "{} {}", self.x, self.y)
+            write!(f, "{}", self.pos)
         } else {
-            write!(f, "{} {} {}", self.x, self.y, self.msg)
+            write!(f, "{} {}", self.pos, self.msg)
         }
     }
 }
 
 impl PartialEq for Player {
     fn eq(&self, other: &Self) -> bool {
-        self.x == other.x && self.y == other.y
+        self.pos == other.pos
     }
 }
 
@@ -266,8 +268,7 @@ impl PartialEq for Player {
 #[derive(Debug, Copy, Clone)]
 struct Human {
     id: i32,
-    x: i32,
-    y: i32,
+    pos: Vec2,
     targeted_by: Option<usize>,
 }
 
@@ -276,14 +277,13 @@ impl Human {
         let input = parse_line();
         Human {
             id: input[0],
-            x: input[1],
-            y: input[2],
+            pos: Vec2 {x: input[1], y: input[2]},
             targeted_by: None
         }
     }
 
     fn check_within_zombie(&self, zombies: &[Zombie]) -> bool {
-        zombies.iter().any(|z| (z.x, z.y) == (self.x, self.y))
+        zombies.iter().any(|z| z.pos == self.pos)
     }
 
     fn savable(&self, player: &Player, zombies: &[Zombie]) -> bool {
@@ -297,7 +297,7 @@ impl Human {
 
 impl PartialEq for Human {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.x == other.x && self.y == other.y
+        self.id == other.id && self.pos == other.pos
     }
 }
 
@@ -320,23 +320,21 @@ const ZOMBIE_STEP: i32 = 400;
 #[derive(Debug, Copy, Clone)]
 struct Zombie {
     id: i32,
-    x: i32,
-    y: i32,
-    next_x: i32,
-    next_y: i32,
+    pos: Vec2,
+    next_pos: Vec2,
     target: Target,
     target_dist_sq: i32,
 }
 
 impl Display for Zombie {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{{id: {}, pos: ({}, {}), next: ({}, {})}}", self.id, self.x, self.y, self.next_x, self.next_y)
+        write!(f, "{{id: {}, pos: ({}), next: ({})}}", self.id, self.pos, self.next_pos)
     }
 }
 
 impl PartialEq for Zombie {
     fn eq(&self, other: &Self) -> bool {
-        (self.id, self.x, self.y, self.next_x, self.next_y) == (other.id, other.x, other.y, other.next_x, other.next_y)
+        (self.id, self.pos, self.next_pos) == (other.id, other.pos, other.next_pos)
     }
 }
 
@@ -345,20 +343,18 @@ impl Zombie {
         let input = parse_line();
         Zombie {
             id: input[0],
-            x: input[1],
-            y: input[2],
-            next_x: input[3],
-            next_y: input[4],
+            pos: Vec2{x: input[1], y: input[2]},
+            next_pos: Vec2{x: input[3], y: input[4]},
             target: Target::Player,
             target_dist_sq: i32::MAX,
         }
     }
 
     fn set_target(&mut self, player: &Player, humans: &[Human]) {
-        self.target_dist_sq = dist_squared((self.next_x, self.next_y), (player.x, player.y));
+        self.target_dist_sq = dist_squared(self.next_pos, player.pos);
         self.target = Target::Player;
         for (idx, human) in humans.iter().enumerate() {
-            let curr_dist = dist_squared((self.next_x, self.next_y), (human.x, human.y));
+            let curr_dist = dist_squared(self.next_pos, human.pos);
             if curr_dist < self.target_dist_sq {
                 self.target_dist_sq = curr_dist;
                 self.target = Target::Human(idx);
@@ -367,16 +363,16 @@ impl Zombie {
     }
 
     fn check_within_player(&self, player: &Player) -> bool {
-        dist_squared((self.next_x, self.next_y), (player.x, player.y)) <= PLAYER_RANGE * PLAYER_RANGE
+        dist_squared(self.next_pos, player.pos) <= PLAYER_RANGE * PLAYER_RANGE
     }
 
     fn set_next_move(&mut self, player: &Player, humans: &[Human]) {
         self.set_target(player, humans);  // TODO: is this needed?
-        let (mut target_x, mut target_y) = (player.x, player.y);
+        let mut target_pos = player.pos;
         if let Target::Human(idx) = self.target {
-            (target_x, target_y) = (humans[idx].x, humans[idx].y);
+            target_pos = humans[idx].pos;
         }
-        (self.next_x, self.next_y) = move_from_to_capped((self.next_x, self.next_y), (target_x, target_y), ZOMBIE_STEP);
+        self.next_pos = move_from_to_capped(self.next_pos, target_pos, ZOMBIE_STEP);
     }
 }
 
@@ -418,38 +414,127 @@ fn read_line_as_i32() -> i32 {
     atoi(&input_line)
 }
 
-fn dist_squared((x1, y1): (i32, i32), (x2, y2): (i32, i32)) -> i32 {
-    (x1-x2) * (x1-x2) + (y1-y2) * (y1-y2)
+#[derive(Debug, PartialEq, Copy, Clone)]
+struct MathVec2<T> {
+    x: T,
+    y: T,
 }
 
-fn dist((x1, y1): (i32, i32), (x2, y2): (i32, i32)) -> f64 {
-    (dist_squared((x1, y1), (x2, y2)) as f64).sqrt()
+type Vec2 = MathVec2<i32>;
+type Vec2f = MathVec2<f64>;
+
+impl From<Vec2> for Vec2f {
+    fn from(value: Vec2) -> Self {
+        Self { x: value.x as f64, y: value.y as f64 }
+    }
 }
 
-fn move_from_to_capped((x1, y1): (i32, i32), (x2, y2): (i32, i32), cap: i32) -> (i32, i32) {
-    if dist((x1, y1), (x2, y2)) <= cap as f64 {
-        return (x2, y2);
+impl From<Vec2f> for Vec2 {
+    fn from(value: Vec2f) -> Self {
+        Self { x: value.x as i32, y: value.y as i32 }
+    }
+}
+
+impl<T: AddAssign> AddAssign for MathVec2<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.x += rhs.x;
+        self.y += rhs.y;
+    }
+}
+
+impl<T: AddAssign> Add for MathVec2<T> {
+    type Output = Self;
+
+    fn add(mut self, rhs: Self) -> Self::Output {
+        self += rhs;
+        self
+    }
+}
+
+impl<T> MathVec2<T>
+where
+    T: Copy + Mul<Output = T> + Add<Output = T> + MulAssign, f64: From<T>
+{
+    fn len(&self) -> f64
+        where <T as Mul>::Output: Add
+    {
+        Into::<f64>::into(self.x*self.x + self.y*self.y).sqrt()
     }
 
-    let dir = scale(norm(vec((x1, y1), (x2, y2))), cap);
-    add((x1, y1), dir)
+    fn scale(&mut self, scalar: T) {
+        self.x *= scalar;
+        self.y *= scalar;
+    }
+
+    fn scaled(&self, scalar: T) -> Self {
+        let mut res = *self;
+        res.scale(scalar);
+        res
+    }
 }
 
-fn vec((x1, y1): (i32, i32), (x2, y2): (i32, i32)) -> (i32, i32) {
-    (x2 - x1, y2 - y1)
+impl Vec2 {
+    fn new() -> Self {
+        Self { x: 0, y: 0 }
+    }
 }
 
-fn norm((x, y): (i32, i32)) -> (f64, f64) {
-    let len = ((x*x + y*y) as f64).sqrt();
-    (x as f64 / len, y as f64 / len)
+impl Vec2f {
+    fn new() -> Self {
+        Self { x: 0.0, y: 0.0 }
+    }
+
+    fn from_points(from: Vec2, to: Vec2) -> Self {
+        Self { x: (to.x - from.x) as f64, y: (to.y - from.y) as f64 }
+    }
+
+    fn normalize(&mut self) {
+        let len = self.len();
+        self.x /= len;
+        self.y /= len;
+    }
+
+    fn norm(&self) -> Self {
+        let mut res = *self;
+        res.normalize();
+        res
+    }
 }
 
-fn scale((x, y): (f64, f64), scalar: i32) -> (f64, f64) {
-    (x * scalar as f64, y * scalar as f64)
+impl<T: Display> Display for MathVec2<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.x, self.y)
+    }
 }
 
-fn add((x1, y1): (i32, i32), (x2, y2): (f64, f64)) -> (i32, i32) {
-    (((x1 as f64) + x2) as i32, ((y1 as f64) + y2) as i32)
+fn sq<T>(num: T) -> T
+where
+    T: Mul<Output = T> + Copy
+{
+    num*num
+}
+
+fn dist_squared<T>(pt1: MathVec2<T>, pt2: MathVec2<T>) -> T
+where
+    T: Sub<Output = T> + Add<Output = T> + Mul<Output = T> + Copy
+{
+    sq(pt1.x-pt2.x) + sq(pt1.y-pt2.y)
+}
+
+fn dist<T>(pt1: MathVec2<T>, pt2: MathVec2<T>) -> f64
+where
+    T: Sub<Output = T> + Add<Output = T> + Mul<Output = T> + Copy, f64: From<T>
+{
+    Into::<f64>::into(dist_squared(pt1, pt2)).sqrt()
+}
+
+fn move_from_to_capped(from: Vec2, to: Vec2, cap: i32) -> Vec2 {
+    if dist(from, to) <= cap as f64 {
+        return to;
+    }
+
+    let dir = Vec2f::from_points(from, to).norm().scaled(cap as f64);
+    from + dir.into()
 }
 
 fn rand() -> u32 {
