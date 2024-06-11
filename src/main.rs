@@ -1,6 +1,7 @@
 // www.codingames.com supports one file only :(
 
 use std::cmp::PartialEq;
+use std::f64::consts::PI;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Sub};
@@ -38,6 +39,8 @@ fn main() {
             eprintln!("{}", *prev_pred_state == state);
         }
 
+        // Note: Force recalculate for testing purposes
+        prediction = Prediction::make(&state, Strategy::closest_savable_human);
         last_state_prediction = prediction.next();
 
         println!("{}", &last_state_prediction.unwrap_or(&GameState::empty()).player);
@@ -67,7 +70,8 @@ impl Prediction {
     fn next(&mut self) -> Option<&GameState> {
         if self.idx >= self.flow.len() {
             None
-        } else {
+        }
+        else {
             self.idx += 1;
             Some(&self.flow[self.idx - 1])
         }
@@ -121,22 +125,32 @@ impl GameState {
     }
 
     fn zombies_set_targets(&mut self) {
-        let mut new_zombies = self.zombies.clone();  // old compilers :((((
-        new_zombies.iter_mut().enumerate().for_each(
-            |(z_idx, z)| {
-                z.set_target(&self.player, &self.humans);
-                if let Target::Human(h_idx) = z.target {
-                    self.humans[h_idx].targeted_by = Some(z_idx);
-                }
+        for i in 0..self.zombies.len() {
+            self.zombies[i].set_target(&self.player, &self.humans);
+            if let Target::Human(h_idx) = self.zombies[i].target {
+                self.humans[h_idx].set_target(&self.zombies, i);
             }
-        );
-        self.zombies = new_zombies;
+        }
+
+        eprint!("Zombie targets:\n\t");
+        for zombie in &self.zombies {
+            let target_id = if let Target::Human(idx) = &zombie.target { self.humans[*idx].id } else { -1 };
+            eprint!("{} -> {} | ", zombie.id, target_id)
+        }
+        eprintln!();
+
+        eprint!("Humans targeted by:\n\t");
+        for human in &self.humans {
+            let target_id = if let Some(idx) = &human.targeted_by { self.zombies[*idx].id } else { -1 };
+            eprint!("{} -> {} | ", human.id, target_id)
+        }
+        eprintln!();
     }
 
     fn calc_zombies_next_move(&mut self) {
-        let mut new_zombies = self.zombies.clone();  // old compilers :((((
-        new_zombies.iter_mut().for_each(|z| z.set_next_move(&self.player, &self.humans));
-        self.zombies = new_zombies;
+        for z in self.zombies.iter_mut() {
+            z.set_next_move(&self.player, &self.humans);
+        }
     }
 
     fn move_zombies(&mut self) {
@@ -146,13 +160,11 @@ impl GameState {
     }
 
     fn kill_zombies(&mut self) {
-        let new_zombies = self.zombies.clone();  // old compilers :((((
-        self.zombies = new_zombies.iter().filter(|z| !z.check_within_player(&self.player)).cloned().collect();
+        self.zombies = self.zombies.iter().filter(|z| !z.check_within_player(&self.player)).cloned().collect();
     }
 
     fn kill_humans(&mut self) {
-        let new_humans = self.humans.clone();  // old compilers :((((
-        self.humans = new_humans.iter().filter(|h| !h.check_within_zombie(&self.zombies)).cloned().collect();
+        self.humans = self.humans.iter().filter(|h| !h.check_within_zombie(&self.zombies)).cloned().collect();
     }
 
     fn ended(&self) -> bool {
@@ -192,10 +204,13 @@ impl Strategy {
 
         let mut msg = "Save human";
         let mut closest_from: Vec<_> = state.humans.iter().filter(|h| h.savable(&state.player, &state.zombies)).collect();
+        eprintln!("{} savable humans", closest_from.len());
         if closest_from.is_empty() {
-            closest_from = state.humans.iter().filter(|h| h.targeted_by == None).collect();
+            closest_from = state.humans.iter().filter(|h| h.targeted_by.is_none()).collect();
+            eprintln!("{} unknown state humans", closest_from.len());
             if closest_from.is_empty() {
                 closest_from = state.humans.iter().collect();
+                eprintln!("No humans are savable :(");
                 msg = "Fuuuck!";
             }
         }
@@ -204,7 +219,8 @@ impl Strategy {
             |h| {
                 if let Some(z_idx) = h.targeted_by {
                     state.zombies[z_idx].target_dist_sq
-                } else {
+                }
+                else {
                     dist_squared(h.pos, state.player.pos)
                 }
             }
@@ -212,7 +228,8 @@ impl Strategy {
 
         if let Some(h) = closest_human {
             Player::new_labeled(h.pos, msg)
-        } else {
+        }
+        else {
             Player::new_labeled(state.player.pos, msg)
         }
     }
@@ -249,7 +266,8 @@ impl Display for Player {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.msg.is_empty() {
             write!(f, "{}", self.pos)
-        } else {
+        }
+        else {
             write!(f, "{} {}", self.pos, self.msg)
         }
     }
@@ -286,12 +304,42 @@ impl Human {
         zombies.iter().any(|z| z.pos == self.pos)
     }
 
-    fn savable(&self, player: &Player, zombies: &[Zombie]) -> bool {
+    fn set_target(&mut self, zombies: &[Zombie], idx: usize) {
+        let zombie_dist = dist_squared(self.pos, zombies[idx].pos);
         if self.targeted_by.is_none() {
-            return false;
+            self.targeted_by = Some(idx);
         }
+        else {
+            let target_idx = self.targeted_by.unwrap();
+            let target_dist = zombies[target_idx].target_dist_sq;
+            if zombie_dist < target_dist {
+                self.targeted_by = Some(idx);
+            }
+        }
+    }
 
-        true  // TODO:
+    fn savable(&self, player: &Player, zombies: &[Zombie]) -> bool {
+        match &self.targeted_by {
+            None => { false }
+            Some(z_idx) => {
+                let zombie = &zombies[*z_idx];
+                let hz = Vec2f::from_points(self.pos, zombie.pos);
+                let hp = Vec2f::from_points(self.pos, player.pos);
+                let angle = hp.angle_to(hz);
+                let zombie_turns = f64::ceil(hz.len() / (ZOMBIE_STEP as f64)) as i32;
+                if angle <= PI/2.0 {
+                    let player_turns = f64::ceil((hp.len() - PLAYER_RANGE as f64) / (PLAYER_STEP as f64)) as i32;
+                    player_turns <= zombie_turns
+                }
+                else {
+                    let proj_zombie_step = f64::cos(angle) * ZOMBIE_STEP as f64;
+                    let z_projected_len = hp.len() - proj_zombie_step;
+                    let zombie_delta = PLAYER_STEP as f64 - proj_zombie_step;
+                    let player_turns = f64::ceil((z_projected_len - PLAYER_RANGE as f64) / zombie_delta) as i32;
+                    player_turns <= zombie_turns
+                }
+            }
+        }
     }
 }
 
@@ -402,7 +450,7 @@ fn atoi(str: &str) -> i32 {
 fn parse_line() -> Vec<i32> {
     let mut input_line = String::new();
     io::stdin().read_line(&mut input_line).unwrap();
-    eprint!("{}", input_line);
+    //eprint!("{}", input_line);
     let strings = input_line.split(" ").collect::<Vec<_>>();
     strings.into_iter().map(atoi).collect()
 }
@@ -410,7 +458,7 @@ fn parse_line() -> Vec<i32> {
 fn read_line_as_i32() -> i32 {
     let mut input_line = String::new();
     io::stdin().read_line(&mut input_line).unwrap();
-    eprint!("{}", input_line);
+    //eprint!("{}", input_line);
     atoi(&input_line)
 }
 
@@ -432,6 +480,17 @@ impl From<Vec2> for Vec2f {
 impl From<Vec2f> for Vec2 {
     fn from(value: Vec2f) -> Self {
         Self { x: value.x as i32, y: value.y as i32 }
+    }
+}
+
+impl<T> Mul for MathVec2<T>
+where
+    T: Mul<Output = T> + Add<Output = T>,
+{
+    type Output = T;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.x * rhs.x + self.y * rhs.y
     }
 }
 
@@ -494,10 +553,13 @@ impl Vec2f {
         self.y /= len;
     }
 
-    fn norm(&self) -> Self {
-        let mut res = *self;
-        res.normalize();
-        res
+    fn norm(mut self) -> Self {
+        self.normalize();
+        self
+    }
+
+    fn angle_to(self, other: Vec2f) -> f64 {
+        f64::acos((self * other) / (self.len() * other.len()))
     }
 }
 
@@ -548,4 +610,8 @@ fn rand_in_range(min: i32, max_exclusive: i32) -> i32 {
     let range = max_exclusive - min;
     let rand = rand() % range as u32;
     min + rand as i32
+}
+
+fn rad_to_deg(rad: f64) -> f64 {
+    rad * 180.0 / PI
 }
