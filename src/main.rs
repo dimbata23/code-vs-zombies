@@ -4,26 +4,28 @@ use std::cmp::PartialEq;
 use std::f64::consts::PI;
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::ops::{Add, AddAssign, Mul, MulAssign, Sub};
+use std::iter::Sum;
+use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Sub};
+use std::process::Output;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /**
  * Save humans, destroy zombies!
  **/
 fn main() {
-    let state = GameState {
-        player: Player::from_stdin(),
-        humans: parse_humans(),
-        zombies: parse_zombies(),
-    };
-
-    eprintln!("Current : {}", state);
-
-    let mut prediction = Prediction::make(&state, Strategy::closest_savable_human);
-    let mut last_state_prediction = prediction.next();
-    println!("{}", last_state_prediction.unwrap_or(&GameState::empty()).player);
-
-    eprintln!("Commence...");
+    // let state = GameState {
+    //     player: Player::from_stdin(),
+    //     humans: parse_humans(),
+    //     zombies: parse_zombies(),
+    // };
+    //
+    // eprintln!("Current : {}", state);
+    //
+    // let mut prediction = Prediction::make(&state, Strategy::closest_savable_human);
+    // let mut last_state_prediction = prediction.next();
+    // println!("{}", last_state_prediction.unwrap_or(&GameState::empty()).player);
+    //
+    // eprintln!("Commence...");
 
     // game loop
     loop {
@@ -33,17 +35,18 @@ fn main() {
             zombies: parse_zombies(),
         };
 
-        eprintln!("Current : {}", state);
-        if let Some(prev_pred_state) = last_state_prediction {
-            eprintln!("Pred was: {}", *prev_pred_state);
-            eprintln!("{}", *prev_pred_state == state);
-        }
+        // eprintln!("Current : {}", state);
+        // if let Some(prev_pred_state) = last_state_prediction {
+        //     eprintln!("Pred was: {}", *prev_pred_state);
+        //     eprintln!("{}", *prev_pred_state == state);
+        // }
 
         // Note: Force recalculate for testing purposes
-        prediction = Prediction::make(&state, Strategy::closest_savable_human);
-        last_state_prediction = prediction.next();
+        // prediction = Prediction::make(&state, Strategy::closest_savable_human);
+        // last_state_prediction = prediction.next();
 
-        println!("{}", &last_state_prediction.unwrap_or(&GameState::empty()).player);
+        //println!("{}", &last_state_prediction.unwrap_or(&GameState::empty()).player);
+        println!("{}", state.simulate(Strategy::closest_savable_human).player);
     }
 }
 
@@ -231,6 +234,26 @@ impl Strategy {
         }
         else {
             Player::new_labeled(state.player.pos, msg)
+        }
+    }
+
+    fn kill_hordes(state: &GameState) -> Player {
+        let msg = "KILL 'EM ALL";
+
+        // // TODO: try to attract more zombies toward the player
+        // let mut zombies_targeted_humans: Vec<_> = state.zombies.iter().filter(|z| if let Target::Human(_) = z.target { true } else { false }).collect();
+        // if !zombies_targeted_humans.is_empty() {
+        //     zombies_targeted_humans.sort_by_key(|z| z.target_dist_sq);
+        // }
+
+        let mut zombies_targeted_player: Vec<_> = state.zombies.iter().filter(|z| if let Target::Player = z.target { true } else { false }).collect();
+        if !zombies_targeted_player.is_empty() {
+            let coord_sum: Vec2f = zombies_targeted_player.iter().map(|z| z.pos).fold(Vec2::new(), |a, b| a + b).into();
+            let centroid = coord_sum / (zombies_targeted_player.len() as f64);
+            Player::new_labeled(centroid.into(), msg)
+        }
+        else {
+            Player::new_labeled(state.player.pos, "???")
         }
     }
 }
@@ -491,6 +514,16 @@ where
 
     fn mul(self, rhs: Self) -> Self::Output {
         self.x * rhs.x + self.y * rhs.y
+    }
+}
+
+impl<T> Div<T> for MathVec2<T>
+    where T: Div<Output = T> + Copy
+{
+    type Output = Self;
+
+    fn div(self, rhs: T) -> Self::Output {
+        Self { x: self.x/rhs, y: self.y/rhs }
     }
 }
 
