@@ -327,12 +327,12 @@ impl Human {
                 let hp = Vec2f::from_points(self.pos, player.pos);
                 let angle = hp.angle_to(hz);
                 let zombie_turns = f64::ceil(hz.len() / (ZOMBIE_STEP as f64)) as i32;
-                if angle <= PI/2.0 {
+                if angle.abs() >= PI/2.0 {
                     let player_turns = f64::ceil((hp.len() - PLAYER_RANGE as f64) / (PLAYER_STEP as f64)) as i32;
                     player_turns <= zombie_turns
                 }
                 else {
-                    let proj_zombie_step = f64::cos(angle) * ZOMBIE_STEP as f64;
+                    let proj_zombie_step = angle.cos() * ZOMBIE_STEP as f64;
                     let z_projected_len = hp.len() - proj_zombie_step;
                     let zombie_delta = PLAYER_STEP as f64 - proj_zombie_step;
                     let player_turns = f64::ceil((z_projected_len - PLAYER_RANGE as f64) / zombie_delta) as i32;
