@@ -13,19 +13,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
  * Save humans, destroy zombies!
  **/
 fn main() {
-    // let state = GameState {
-    //     player: Player::from_stdin(),
-    //     humans: parse_humans(),
-    //     zombies: parse_zombies(),
-    // };
-    //
-    // eprintln!("Current : {}", state);
-    //
-    // let mut prediction = Prediction::make(&state, Strategy::closest_savable_human);
-    // let mut last_state_prediction = prediction.next();
-    // println!("{}", last_state_prediction.unwrap_or(&GameState::empty()).player);
-    //
-    // eprintln!("Commence...");
+    let state = GameState {
+        player: Player::from_stdin(),
+        humans: parse_humans(),
+        zombies: parse_zombies(),
+        score: 0
+    };
+
+    eprintln!("Current : {}", state);
+
+    let mut prediction = Prediction::make(&state, Strategy::closest_savable_human);
+    let mut last_state_prediction = prediction.next();
+    println!("{}", last_state_prediction.unwrap_or(&GameState::empty()).player);
+
+    eprintln!("Commence...");
 
     // game loop
     loop {
@@ -33,17 +34,25 @@ fn main() {
             player: Player::from_stdin(),
             humans: parse_humans(),
             zombies: parse_zombies(),
+            score: 0
         };
 
-        // eprintln!("Current : {}", state);
-        // if let Some(prev_pred_state) = last_state_prediction {
-        //     eprintln!("Pred was: {}", *prev_pred_state);
-        //     eprintln!("{}", *prev_pred_state == state);
-        // }
+        eprintln!("Current : {}", state);
+        if let Some(prev_pred_state) = last_state_prediction {
+            eprintln!("Pred was: {}", *prev_pred_state);
+            eprintln!("{}", *prev_pred_state == state);
+            // TODO: calculate actual points earned based on previous state
+            // state.score = calculated_pts;
+        }
 
         // Note: Force recalculate for testing purposes
-        // prediction = Prediction::make(&state, Strategy::closest_savable_human);
-        // last_state_prediction = prediction.next();
+        //prediction = Prediction::make(&state, Strategy::closest_savable_human);
+        last_state_prediction = prediction.next();
+        if let Some(state) = last_state_prediction {
+            if state.ended() {
+                eprintln!("Final score: {}", state.score);
+            }
+        }
 
         //println!("{}", &last_state_prediction.unwrap_or(&GameState::empty()).player);
         println!("{}", state.simulate(Strategy::closest_savable_human).player);
@@ -87,16 +96,20 @@ impl Prediction {
 const MAX_X: i32 = 16000;
 const MAX_Y: i32 = 9000;
 
+const fib: [i32; 30] = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89,144,233,377,610,987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229];
+const ZOMBIE_PTS: i32 = 10;
+
 #[derive(Debug, Clone, PartialEq)]
 struct GameState {
     player: Player,
     humans: Vec<Human>,
     zombies: Vec<Zombie>,
+    score: i32,
 }
 
 impl Display for GameState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut res = write!(f, "P: ({}), {}H, {}Z: ", self.player.pos, self.humans.len(), self.zombies.len());
+        let mut res = write!(f, "S: {}, P: ({}), {}H, {}Z: ", self.score, self.player.pos, self.humans.len(), self.zombies.len());
         for zombie in &self.zombies {
             res = res.and(write!(f, "{} ", zombie));
         }
@@ -106,11 +119,11 @@ impl Display for GameState {
 
 impl GameState {
     fn new(player: Player, humans: Vec<Human>, zombies: Vec<Zombie>) -> Self {
-        GameState { player, humans, zombies }
+        GameState { player, humans, zombies, score: 0 }
     }
 
     fn empty() -> GameState {
-        GameState { player: Player::new_labeled(Vec2::new(), "???"), humans: vec![], zombies: vec![] }
+        GameState { player: Player::new_labeled(Vec2::new(), "???"), humans: vec![], zombies: vec![], score: 0 }
     }
 
     fn simulate(&self, strategy: fn(&GameState) -> Player) -> GameState {
@@ -163,7 +176,14 @@ impl GameState {
     }
 
     fn kill_zombies(&mut self) {
+        let zombie_reward = ZOMBIE_PTS * sq(self.humans.len() as i32);
+        let before_cnt = self.zombies.len();
         self.zombies = self.zombies.iter().filter(|z| !z.check_within_player(&self.player)).cloned().collect();
+        let after_cnt = self.zombies.len();
+        let killed_cnt = before_cnt - after_cnt;
+        for i in 1..=killed_cnt {
+            self.score += zombie_reward * fib[i+1];
+        }
     }
 
     fn kill_humans(&mut self) {
