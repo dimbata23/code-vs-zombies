@@ -4,99 +4,92 @@ use std::cmp::PartialEq;
 use std::f64::consts::PI;
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::iter::Sum;
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Sub};
-use std::process::Output;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /**
  * Save humans, destroy zombies!
  **/
 fn main() {
-    let state = GameState {
-        player: Player::from_stdin(),
-        humans: parse_humans(),
-        zombies: parse_zombies(),
-        score: 0
-    };
-
-    eprintln!("Current : {}", state);
-
-    let mut prediction = Prediction::make(&state, Strategy::closest_savable_human);
-    let mut last_state_prediction = prediction.next();
-    println!("{}", last_state_prediction.unwrap_or(&GameState::empty()).player);
-
-    eprintln!("Commence...");
+    let mut opt_last_state: Option<GameState> = None;
 
     // game loop
     loop {
-        let state = GameState {
-            player: Player::from_stdin(),
-            humans: parse_humans(),
-            zombies: parse_zombies(),
-            score: 0
-        };
+        let mut state = GameState::new(
+            Player::from_stdin(),
+            parse_humans(),
+            parse_zombies()
+        );
 
-        eprintln!("Current : {}", state);
-        if let Some(prev_pred_state) = last_state_prediction {
-            eprintln!("Pred was: {}", *prev_pred_state);
-            eprintln!("{}", *prev_pred_state == state);
-            // TODO: calculate actual points earned based on previous state
-            // state.score = calculated_pts;
+        if opt_last_state.is_none() {
+            opt_last_state = Some(state.clone());
+        }
+        else {
+            let last_state = opt_last_state.as_ref().unwrap();
+            state.calculate_new_score(last_state);
+            opt_last_state = Some(state.clone());
+            eprintln!("Score: {}", state.score);
         }
 
-        // Note: Force recalculate for testing purposes
-        //prediction = Prediction::make(&state, Strategy::closest_savable_human);
-        last_state_prediction = prediction.next();
-        if let Some(state) = last_state_prediction {
-            if state.ended() {
-                eprintln!("Final score: {}", state.score);
-            }
-        }
-
-        //println!("{}", &last_state_prediction.unwrap_or(&GameState::empty()).player);
-        println!("{}", state.simulate(Strategy::closest_savable_human).player);
+        const LOOKAHEAD_TURNS: i32 = 12;
+        let mut sim_tree = SimTree::with_strategies(&[Strategy::save_humans, Strategy::go_kill]);
+        let best_state = sim_tree.calculate_best_state(&state, LOOKAHEAD_TURNS);
+        println!("{}", best_state.player);
     }
 }
 
 // ----- Game Flow -----
 
-struct Prediction {
-    flow: Vec<GameState>,
-    idx: usize,
+type StrategyFn = fn(&GameState) -> Player;
+
+struct SimTree {
+    strategies: Vec<StrategyFn>,
+    best_score: i32,
+    best_state: GameState,
 }
 
-impl Prediction {
-    fn new() -> Prediction {
-        Prediction { flow: vec![], idx: 0 }
-    }
-    fn make(start: &GameState, strategy: fn(&GameState) -> Player) -> Prediction {
-        let mut pred = Prediction::new();
-        pred.flow.push(start.simulate(strategy));
-        while !pred.flow.last().unwrap().ended() {
-            pred.flow.push(pred.flow.last().unwrap().simulate(strategy))
-        }
-        pred
+impl SimTree {
+    fn with_strategies(strategies: &[StrategyFn]) -> Self {
+        Self { strategies: strategies.iter().cloned().collect(), best_score: -1, best_state: GameState::empty() }
     }
 
-    fn next(&mut self) -> Option<&GameState> {
-        if self.idx >= self.flow.len() {
-            None
+    fn calculate_best_state(&mut self, starting_state: &GameState, lookahead_turns: i32) -> GameState {
+        for strategy in self.strategies.iter() {
+            let state = starting_state.simulate(*strategy);
+            let max_score = self.calc_max_score_inner_rec(&state, lookahead_turns);
+            if max_score > self.best_score {
+                self.best_score = max_score;
+                self.best_state = state;
+            }
         }
-        else {
-            self.idx += 1;
-            Some(&self.flow[self.idx - 1])
+
+        self.best_state.clone()
+    }
+
+    fn calc_max_score_inner_rec(&self, state: &GameState, depth: i32) -> i32 {
+        if state.ended() || depth == 0 {
+            if state.humans.is_empty() || !state.clone().winnable() {
+                return -1;
+            }
+
+            return state.score;
         }
+
+        let mut max_score = state.score;
+        for strategy in self.strategies.iter() {
+            let new_state = state.simulate(*strategy);
+            let score = self.calc_max_score_inner_rec(&new_state, depth - 1);
+            if score > max_score {
+                max_score = score;
+            }
+        }
+
+        max_score
     }
 }
-
 
 // ----- Game State -----
 
-const MAX_X: i32 = 16000;
-const MAX_Y: i32 = 9000;
-
-const fib: [i32; 30] = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89,144,233,377,610,987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229];
+const FIB: [i32; 30] = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89,144,233,377,610,987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229];
 const ZOMBIE_PTS: i32 = 10;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,19 +141,20 @@ impl GameState {
             }
         }
 
-        eprint!("Zombie targets:\n\t");
-        for zombie in &self.zombies {
-            let target_id = if let Target::Human(idx) = &zombie.target { self.humans[*idx].id } else { -1 };
-            eprint!("{} -> {} | ", zombie.id, target_id)
-        }
-        eprintln!();
-
-        eprint!("Humans targeted by:\n\t");
-        for human in &self.humans {
-            let target_id = if let Some(idx) = &human.targeted_by { self.zombies[*idx].id } else { -1 };
-            eprint!("{} -> {} | ", human.id, target_id)
-        }
-        eprintln!();
+        // DEBUG
+        // eprint!("Zombie targets:\n\t");
+        // for zombie in &self.zombies {
+        //     let target_id = if let Target::Human(idx) = &zombie.target { self.humans[*idx].id } else { -1 };
+        //     eprint!("{} -> {} | ", zombie.id, target_id)
+        // }
+        // eprintln!();
+        //
+        // eprint!("Humans targeted by:\n\t");
+        // for human in &self.humans {
+        //     let target_id = if let Some(idx) = &human.targeted_by { self.zombies[*idx].id } else { -1 };
+        //     eprint!("{} -> {} | ", human.id, target_id)
+        // }
+        // eprintln!();
     }
 
     fn calc_zombies_next_move(&mut self) {
@@ -175,15 +169,21 @@ impl GameState {
         }
     }
 
+    fn calc_score_for_zombie_kills(killed_zombies_count: usize, humans_alive_count: usize) -> i32 {
+        let mut res_score = 0;
+        let zombie_reward = ZOMBIE_PTS * sq(humans_alive_count as i32);
+        for i in 1..=killed_zombies_count {
+            res_score += zombie_reward * FIB[i+1];
+        }
+        res_score
+    }
+
     fn kill_zombies(&mut self) {
-        let zombie_reward = ZOMBIE_PTS * sq(self.humans.len() as i32);
         let before_cnt = self.zombies.len();
         self.zombies = self.zombies.iter().filter(|z| !z.check_within_player(&self.player)).cloned().collect();
         let after_cnt = self.zombies.len();
         let killed_cnt = before_cnt - after_cnt;
-        for i in 1..=killed_cnt {
-            self.score += zombie_reward * fib[i+1];
-        }
+        self.score += Self::calc_score_for_zombie_kills(killed_cnt, self.humans.len());
     }
 
     fn kill_humans(&mut self) {
@@ -198,6 +198,19 @@ impl GameState {
         self.humans.iter_mut().for_each(|h| h.targeted_by = None);
         self.zombies.iter_mut().for_each(|z| { z.target = Target::Player; z.target_dist_sq = i32::MAX; });
     }
+
+    fn calculate_new_score(&mut self, previous_state: &GameState) {
+        let zombie_kills = previous_state.zombies.len() - self.zombies.len();
+        let move_got_score = Self::calc_score_for_zombie_kills(zombie_kills, previous_state.humans.len());
+        eprintln!("Killed {} zombies and got {} more points.", zombie_kills, move_got_score);
+        self.score = previous_state.score + move_got_score;
+    }
+
+    fn winnable(&mut self) -> bool {
+        self.clear_targets();
+        self.zombies_set_targets();
+        self.zombies.is_empty() || self.humans.iter().any(|h| h.savable(&self.player, &self.zombies))
+    }
 }
 
 
@@ -206,35 +219,25 @@ impl GameState {
 struct Strategy;
 
 impl Strategy {
-    fn stay_still(state: &GameState) -> Player {
-        Player { pos: state.player.pos, msg: "Zzz...".to_string() }
-    }
-
-    fn random_pos(_: &GameState) -> Player {
-        Player {
-            pos: Vec2 {
-                x: rand_in_range(0, MAX_X),
-                y: rand_in_range(0, MAX_Y),
-            },
-            msg: "Random Bullshit Go!!!".to_string()
-        }
-    }
-
-    fn closest_savable_human(state: &GameState) -> Player {
-        if state.humans.is_empty() {
-            return Strategy::stay_still(state);
+    fn save_humans(state: &GameState) -> Player {
+        // TODO: No need to hug the humans
+        if state.zombies.len() == 1 {
+            if let Target::Human(h_idx) = state.zombies[0].target {
+                return Player::new_labeled(state.humans[h_idx].pos, "Shoo");
+            }
+            return Player::new_labeled(state.zombies[0].pos, "Shoo");
         }
 
-        let mut msg = "Save human";
+        let mut msg = "protec";
         let mut closest_from: Vec<_> = state.humans.iter().filter(|h| h.savable(&state.player, &state.zombies)).collect();
-        eprintln!("{} savable humans", closest_from.len());
+        //eprintln!("{} savable humans", closest_from.len());
         if closest_from.is_empty() {
             closest_from = state.humans.iter().filter(|h| h.targeted_by.is_none()).collect();
-            eprintln!("{} unknown state humans", closest_from.len());
+            //eprintln!("{} unknown state humans", closest_from.len());
             if closest_from.is_empty() {
                 closest_from = state.humans.iter().collect();
-                eprintln!("No humans are savable :(");
-                msg = "Fuuuck!";
+                //eprintln!("No humans are savable :(");
+                msg = "RIP";
             }
         }
 
@@ -257,24 +260,52 @@ impl Strategy {
         }
     }
 
-    fn kill_hordes(state: &GameState) -> Player {
+    fn go_kill(state: &GameState) -> Player {
         let msg = "KILL 'EM ALL";
 
-        // // TODO: try to attract more zombies toward the player
-        // let mut zombies_targeted_humans: Vec<_> = state.zombies.iter().filter(|z| if let Target::Human(_) = z.target { true } else { false }).collect();
-        // if !zombies_targeted_humans.is_empty() {
-        //     zombies_targeted_humans.sort_by_key(|z| z.target_dist_sq);
-        // }
+        if state.zombies.len() == 1 {
+            return Player::new_labeled(state.zombies[0].pos, msg);
+        }
 
-        let mut zombies_targeted_player: Vec<_> = state.zombies.iter().filter(|z| if let Target::Player = z.target { true } else { false }).collect();
-        if !zombies_targeted_player.is_empty() {
+        let zombies_targeted_player: Vec<_> = state.zombies.iter().filter(|z| if let Target::Player = z.target { true } else { false }).collect();
+        if zombies_targeted_player.len() == state.zombies.len() {
             let coord_sum: Vec2f = zombies_targeted_player.iter().map(|z| z.pos).fold(Vec2::new(), |a, b| a + b).into();
             let centroid = coord_sum / (zombies_targeted_player.len() as f64);
-            Player::new_labeled(centroid.into(), msg)
+            return Player::new_labeled(centroid.into(), msg)
         }
-        else {
-            Player::new_labeled(state.player.pos, "???")
+
+        let closest_from: Vec<_> = state.humans.iter().filter(|h| h.savable(&state.player, &state.zombies)).collect();
+        let closest_human = closest_from.iter().min_by_key(
+            |h| {
+                if let Some(z_idx) = h.targeted_by {
+                    state.zombies[z_idx].target_dist_sq
+                }
+                else {
+                    dist_squared(h.pos, state.player.pos)
+                }
+            }
+        );
+
+        if let Some(h) = closest_human {
+            let human_ptr= *h as *const Human;
+            let humans_start_ptr = &state.humans[0] as *const Human;
+            let human_idx = unsafe{ human_ptr.offset_from(humans_start_ptr) as usize };
+            let zombies_targeting_human: Vec<_> = state.zombies.iter().filter(|z| z.target == Target::Human(human_idx)).collect();
+            if zombies_targeting_human.len() == 1 {
+                return Player::new_labeled(zombies_targeting_human[0].pos, msg);
+            }
+
+            let farthest = (zombies_targeting_human.iter().max_by_key(|z| z.target_dist_sq).unwrap().target_dist_sq as f64).sqrt();
+            let weight_fn = |dist: i32| farthest - (dist as f64).sqrt();
+            let sum_weights = zombies_targeting_human.iter().map(|z| weight_fn(z.target_dist_sq)).fold(0f64, |a, b| a + b);
+            let centroid_weighted: Vec2f = zombies_targeting_human.iter().map(|z| (<Vec2 as Into<Vec2f>>::into(z.pos).scaled(weight_fn(z.target_dist_sq))) / sum_weights).fold(Vec2f::new(), |a, b| a + b).into();
+
+            return Player::new_labeled(centroid_weighted.into(), msg);
         }
+
+        // fallback
+        let closest_zombie = state.zombies.iter().min_by_key(|z| dist_squared(z.pos, state.player.pos)).unwrap().pos;
+        Player::new_labeled(closest_zombie, msg)
     }
 }
 
@@ -650,21 +681,4 @@ fn move_from_to_capped(from: Vec2, to: Vec2, cap: i32) -> Vec2 {
 
     let dir = Vec2f::from_points(from, to).norm().scaled(cap as f64);
     from + dir.into()
-}
-
-fn rand() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos()
-}
-
-fn rand_in_range(min: i32, max_exclusive: i32) -> i32 {
-    let range = max_exclusive - min;
-    let rand = rand() % range as u32;
-    min + rand as i32
-}
-
-fn rad_to_deg(rad: f64) -> f64 {
-    rad * 180.0 / PI
 }
