@@ -17,21 +17,20 @@ fn main() {
         let mut state = GameState::new(
             Player::from_stdin(),
             parse_humans(),
-            parse_zombies()
+            parse_zombies(),
         );
 
         if opt_last_state.is_none() {
             opt_last_state = Some(state.clone());
-        }
-        else {
+        } else {
             let last_state = opt_last_state.as_ref().unwrap();
             state.calculate_new_score(last_state);
             opt_last_state = Some(state.clone());
             eprintln!("Score: {}", state.score);
         }
 
-        const LOOKAHEAD_TURNS: i32 = 12;
-        let mut sim_tree = SimTree::with_strategies(&[Strategy::save_humans, Strategy::go_kill]);
+        const LOOKAHEAD_TURNS: i32 = 13; // herd_zombies performs better than go_kill, currently disabled go_kill :(
+        let mut sim_tree = SimTree::with_strategies(&[Strategy::save_humans, Strategy::herd_zombies]);
         let best_state = sim_tree.calculate_best_state(&state, LOOKAHEAD_TURNS);
         println!("{}", best_state.player);
     }
@@ -62,12 +61,20 @@ impl SimTree {
             }
         }
 
+        // catch all ( doesn't always work :( )
+        if self.best_state.score == -1 {
+            self.best_state = starting_state.simulate(Strategy::save_humans);
+        }
         self.best_state.clone()
     }
 
     fn calc_max_score_inner_rec(&self, state: &GameState, depth: i32) -> i32 {
+        if !state.winnable {
+            return -1;
+        }
+
         if state.ended() || depth == 0 {
-            if state.humans.is_empty() || !state.clone().winnable() {
+            if state.humans.is_empty() {
                 return -1;
             }
 
@@ -89,7 +96,7 @@ impl SimTree {
 
 // ----- Game State -----
 
-const FIB: [i32; 30] = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89,144,233,377,610,987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229];
+const FIB: [i32; 30] = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229];
 const ZOMBIE_PTS: i32 = 10;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +105,7 @@ struct GameState {
     humans: Vec<Human>,
     zombies: Vec<Zombie>,
     score: i32,
+    winnable: bool,
 }
 
 impl Display for GameState {
@@ -112,17 +120,18 @@ impl Display for GameState {
 
 impl GameState {
     fn new(player: Player, humans: Vec<Human>, zombies: Vec<Zombie>) -> Self {
-        GameState { player, humans, zombies, score: 0 }
+        GameState { player, humans, zombies, score: 0, winnable: true }
     }
 
     fn empty() -> GameState {
-        GameState { player: Player::new_labeled(Vec2::new(), "???"), humans: vec![], zombies: vec![], score: 0 }
+        GameState { player: Player::new_labeled(Vec2::new(), "???"), humans: vec![], zombies: vec![], score: 0, winnable: false }
     }
 
     fn simulate(&self, strategy: fn(&GameState) -> Player) -> GameState {
         let mut next_state = self.clone();
         next_state.clear_targets();
         next_state.zombies_set_targets();
+        next_state.calc_savable_humans();
         let player_target = strategy(&next_state);
         next_state.player.pos = move_from_to_capped(next_state.player.pos, player_target.pos, PLAYER_STEP);
         next_state.player.msg = player_target.msg;
@@ -130,6 +139,7 @@ impl GameState {
         next_state.kill_zombies();
         next_state.kill_humans();
         next_state.calc_zombies_next_move();
+        next_state.calc_winnable();
         next_state
     }
 
@@ -173,7 +183,7 @@ impl GameState {
         let mut res_score = 0;
         let zombie_reward = ZOMBIE_PTS * sq(humans_alive_count as i32);
         for i in 1..=killed_zombies_count {
-            res_score += zombie_reward * FIB[i+1];
+            res_score += zombie_reward * FIB[i + 1];
         }
         res_score
     }
@@ -195,8 +205,14 @@ impl GameState {
     }
 
     fn clear_targets(&mut self) {
-        self.humans.iter_mut().for_each(|h| h.targeted_by = None);
-        self.zombies.iter_mut().for_each(|z| { z.target = Target::Player; z.target_dist_sq = i32::MAX; });
+        self.humans.iter_mut().for_each(|h| {
+            h.targeted_by = None;
+            h.state = HState::Unknown;
+        });
+        self.zombies.iter_mut().for_each(|z| {
+            z.target = Target::Player;
+            z.target_dist_sq = i32::MAX;
+        });
     }
 
     fn calculate_new_score(&mut self, previous_state: &GameState) {
@@ -206,13 +222,16 @@ impl GameState {
         self.score = previous_state.score + move_got_score;
     }
 
-    fn winnable(&mut self) -> bool {
-        self.clear_targets();
-        self.zombies_set_targets();
-        self.zombies.is_empty() || self.humans.iter().any(|h| h.savable(&self.player, &self.zombies))
+    fn calc_savable_humans(&mut self) {
+        for human in self.humans.iter_mut() {
+            human.state = human.calc_state(&self.player, &self.zombies);
+        }
+    }
+
+    fn calc_winnable(&mut self) {
+        self.winnable = self.zombies.is_empty() || self.humans.iter().any(|h| !matches!(h.state, HState::Dead));
     }
 }
-
 
 
 // ----- Strategies -----
@@ -223,13 +242,13 @@ impl Strategy {
         // TODO: No need to hug the humans
         if state.zombies.len() == 1 {
             if let Target::Human(h_idx) = state.zombies[0].target {
-                return Player::new_labeled(state.humans[h_idx].pos, "Shoo");
+                return Player::new_labeled(state.humans[h_idx].pos, "shoo");
             }
-            return Player::new_labeled(state.zombies[0].pos, "Shoo");
+            return Player::new_labeled(state.zombies[0].pos, "shoo");
         }
 
         let mut msg = "protec";
-        let mut closest_from: Vec<_> = state.humans.iter().filter(|h| h.savable(&state.player, &state.zombies)).collect();
+        let mut closest_from: Vec<_> = state.humans.iter().filter(|h| matches!(h.state, HState::Savable)).collect();
         //eprintln!("{} savable humans", closest_from.len());
         if closest_from.is_empty() {
             closest_from = state.humans.iter().filter(|h| h.targeted_by.is_none()).collect();
@@ -245,8 +264,7 @@ impl Strategy {
             |h| {
                 if let Some(z_idx) = h.targeted_by {
                     state.zombies[z_idx].target_dist_sq
-                }
-                else {
+                } else {
                     dist_squared(h.pos, state.player.pos)
                 }
             }
@@ -254,42 +272,46 @@ impl Strategy {
 
         if let Some(h) = closest_human {
             Player::new_labeled(h.pos, msg)
-        }
-        else {
+        } else {
             Player::new_labeled(state.player.pos, msg)
         }
     }
 
     fn go_kill(state: &GameState) -> Player {
-        let msg = "KILL 'EM ALL";
+        let msg = " KILL 'EM ALL";
 
         if state.zombies.len() == 1 {
             return Player::new_labeled(state.zombies[0].pos, msg);
         }
 
+        // All zombies are targeting the player
         let zombies_targeted_player: Vec<_> = state.zombies.iter().filter(|z| if let Target::Player = z.target { true } else { false }).collect();
         if zombies_targeted_player.len() == state.zombies.len() {
             let coord_sum: Vec2f = zombies_targeted_player.iter().map(|z| z.pos).fold(Vec2::new(), |a, b| a + b).into();
             let centroid = coord_sum / (zombies_targeted_player.len() as f64);
-            return Player::new_labeled(centroid.into(), msg)
+
+            // TODO: Try to avoid killing zombies on the way
+            // TODO: Try changing it to "more than half of the zombies" not "all"
+
+            return Player::new_labeled(centroid.into(), msg);
         }
 
-        let closest_from: Vec<_> = state.humans.iter().filter(|h| h.savable(&state.player, &state.zombies)).collect();
+
+        let closest_from: Vec<_> = state.humans.iter().filter(|h| matches!(h.state, HState::Savable)).collect();
         let closest_human = closest_from.iter().min_by_key(
             |h| {
                 if let Some(z_idx) = h.targeted_by {
                     state.zombies[z_idx].target_dist_sq
-                }
-                else {
+                } else {
                     dist_squared(h.pos, state.player.pos)
                 }
             }
         );
 
         if let Some(h) = closest_human {
-            let human_ptr= *h as *const Human;
+            let human_ptr = *h as *const Human;
             let humans_start_ptr = &state.humans[0] as *const Human;
-            let human_idx = unsafe{ human_ptr.offset_from(humans_start_ptr) as usize };
+            let human_idx = unsafe { human_ptr.offset_from(humans_start_ptr) as usize };
             let zombies_targeting_human: Vec<_> = state.zombies.iter().filter(|z| z.target == Target::Human(human_idx)).collect();
             if zombies_targeting_human.len() == 1 {
                 return Player::new_labeled(zombies_targeting_human[0].pos, msg);
@@ -306,6 +328,88 @@ impl Strategy {
         // fallback
         let closest_zombie = state.zombies.iter().min_by_key(|z| dist_squared(z.pos, state.player.pos)).unwrap().pos;
         Player::new_labeled(closest_zombie, msg)
+    }
+
+    fn herd_zombies(state: &GameState) -> Player {
+        // TODO: try to actually make the most zombies follow you
+
+        #[derive(Debug)]
+        struct Herd<'a> {
+            zombies: Vec<&'a Zombie>,
+            centroid: Vec2,
+        }
+
+        impl<'a> Herd<'a> {
+            fn add(&mut self, zombie: &'a Zombie) -> bool {
+                if true /*dist_squared(zombie.pos, self.centroid) <= PLAYER_RANGE * PLAYER_RANGE*/ {
+                    self.zombies.push(zombie);
+                    if self.add_if_possible() {
+                        return true;
+                    } else {
+                        self.zombies.pop();
+                        return false;
+                    }
+                }
+
+                false
+            }
+
+            fn add_if_possible(&mut self) -> bool {
+                let centroid = (self.zombies.iter().map(|z| z.pos.into()).fold(Vec2f::new(), |a, b| a + b) / self.zombies.len() as f64).into();
+                if self.zombies.iter().all(|z| dist_squared(z.pos, centroid) <= PLAYER_RANGE * PLAYER_RANGE) {
+                    self.centroid = centroid;
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        let mut map_zidx_to_herd_idx = vec![];
+        map_zidx_to_herd_idx.resize(state.zombies.len(), None);
+        let mut herds: Vec<Herd> = vec![];
+
+        let mut add_in_a_herd = |z_idx: usize| {
+            if map_zidx_to_herd_idx[z_idx].is_some() {
+                return;
+            }
+
+            for herd_idx in 0..herds.len() {
+                if herds[herd_idx].add(&state.zombies[z_idx]) {
+                    map_zidx_to_herd_idx[z_idx] = Some(herd_idx);
+                    return;
+                }
+            }
+
+            herds.push(Herd { zombies: vec![&state.zombies[z_idx]], centroid: state.zombies[z_idx].pos });
+        };
+
+
+        for z_idx in 0..state.zombies.len() {
+            add_in_a_herd(z_idx);
+        }
+
+        // DEBUG
+        // eprintln!("{} herds: ", herds.len());
+        // for (idx, herd) in herds.iter().enumerate() {
+        //     eprint!("({}: ", idx);
+        //     eprint!("{:?}", herd.zombies.iter().map(|z| z.id).collect::<Vec<_>>());
+        //     eprint!("), ")
+        // }
+        // eprintln!();
+
+        let max_len = herds.iter().map(|h| h.zombies.len()).max().unwrap();
+        let herds_max: Vec<_> = herds.iter().filter(|h| h.zombies.len() == max_len).collect();
+        let mut pos = herds_max.first().unwrap().centroid;
+        let mut dist = dist_squared(pos, state.player.pos);
+        for herd in herds_max.iter().skip(1) {
+            let curr_dist = dist_squared(herd.centroid, state.player.pos);
+            if curr_dist < dist {
+                pos = herd.centroid;
+                dist = curr_dist;
+            }
+        }
+
+        Player::new_labeled(pos, "om nom nom")
     }
 }
 
@@ -332,7 +436,7 @@ impl Player {
 
     fn from_stdin() -> Self {
         let input = parse_line();
-        Player::new(Vec2 {x: input[0], y: input[1]})
+        Player::new(Vec2 { x: input[0], y: input[1] })
     }
 }
 
@@ -340,8 +444,7 @@ impl Display for Player {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.msg.is_empty() {
             write!(f, "{}", self.pos)
-        }
-        else {
+        } else {
             write!(f, "{} {}", self.pos, self.msg)
         }
     }
@@ -354,7 +457,6 @@ impl PartialEq for Player {
 }
 
 
-
 // ----- Humans -----
 
 #[derive(Debug, Copy, Clone)]
@@ -362,6 +464,14 @@ struct Human {
     id: i32,
     pos: Vec2,
     targeted_by: Option<usize>,
+    state: HState,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HState {
+    Unknown,
+    Savable,
+    Dead,
 }
 
 impl Human {
@@ -369,8 +479,9 @@ impl Human {
         let input = parse_line();
         Human {
             id: input[0],
-            pos: Vec2 {x: input[1], y: input[2]},
-            targeted_by: None
+            pos: Vec2 { x: input[1], y: input[2] },
+            targeted_by: None,
+            state: HState::Unknown,
         }
     }
 
@@ -382,8 +493,7 @@ impl Human {
         let zombie_dist = dist_squared(self.pos, zombies[idx].pos);
         if self.targeted_by.is_none() {
             self.targeted_by = Some(idx);
-        }
-        else {
+        } else {
             let target_idx = self.targeted_by.unwrap();
             let target_dist = zombies[target_idx].target_dist_sq;
             if zombie_dist < target_dist {
@@ -392,25 +502,24 @@ impl Human {
         }
     }
 
-    fn savable(&self, player: &Player, zombies: &[Zombie]) -> bool {
+    fn calc_state(&self, player: &Player, zombies: &[Zombie]) -> HState {
         match &self.targeted_by {
-            None => { false }
+            None => { HState::Unknown }
             Some(z_idx) => {
                 let zombie = &zombies[*z_idx];
                 let hz = Vec2f::from_points(self.pos, zombie.pos);
                 let hp = Vec2f::from_points(self.pos, player.pos);
                 let angle = hp.angle_to(hz);
                 let zombie_turns = f64::ceil(hz.len() / (ZOMBIE_STEP as f64)) as i32;
-                if angle.abs() >= PI/2.0 {
+                if angle.abs() >= PI / 2.0 {
                     let player_turns = f64::ceil((hp.len() - PLAYER_RANGE as f64) / (PLAYER_STEP as f64)) as i32;
-                    player_turns <= zombie_turns
-                }
-                else {
+                    if player_turns <= zombie_turns { HState::Savable } else { HState::Dead }
+                } else {
                     let proj_zombie_step = angle.cos() * ZOMBIE_STEP as f64;
                     let z_projected_len = hp.len() - proj_zombie_step;
                     let zombie_delta = PLAYER_STEP as f64 - proj_zombie_step;
                     let player_turns = f64::ceil((z_projected_len - PLAYER_RANGE as f64) / zombie_delta) as i32;
-                    player_turns <= zombie_turns
+                    if player_turns <= zombie_turns { HState::Savable } else { HState::Dead }
                 }
             }
         }
@@ -432,7 +541,6 @@ fn parse_humans() -> Vec<Human> {
     }
     res
 }
-
 
 
 // ----- Zombies -----
@@ -465,8 +573,8 @@ impl Zombie {
         let input = parse_line();
         Zombie {
             id: input[0],
-            pos: Vec2{x: input[1], y: input[2]},
-            next_pos: Vec2{x: input[3], y: input[4]},
+            pos: Vec2 { x: input[1], y: input[2] },
+            next_pos: Vec2 { x: input[3], y: input[4] },
             target: Target::Player,
             target_dist_sq: i32::MAX,
         }
@@ -558,8 +666,8 @@ impl From<Vec2f> for Vec2 {
 }
 
 impl<T> Mul for MathVec2<T>
-where
-    T: Mul<Output = T> + Add<Output = T>,
+    where
+        T: Mul<Output=T> + Add<Output=T>,
 {
     type Output = T;
 
@@ -569,12 +677,12 @@ where
 }
 
 impl<T> Div<T> for MathVec2<T>
-    where T: Div<Output = T> + Copy
+    where T: Div<Output=T> + Copy
 {
     type Output = Self;
 
     fn div(self, rhs: T) -> Self::Output {
-        Self { x: self.x/rhs, y: self.y/rhs }
+        Self { x: self.x / rhs, y: self.y / rhs }
     }
 }
 
@@ -595,13 +703,13 @@ impl<T: AddAssign> Add for MathVec2<T> {
 }
 
 impl<T> MathVec2<T>
-where
-    T: Copy + Mul<Output = T> + Add<Output = T> + MulAssign, f64: From<T>
+    where
+        T: Copy + Mul<Output=T> + Add<Output=T> + MulAssign, f64: From<T>
 {
     fn len(&self) -> f64
         where <T as Mul>::Output: Add
     {
-        Into::<f64>::into(self.x*self.x + self.y*self.y).sqrt()
+        Into::<f64>::into(self.x * self.x + self.y * self.y).sqrt()
     }
 
     fn scale(&mut self, scalar: T) {
@@ -654,22 +762,22 @@ impl<T: Display> Display for MathVec2<T> {
 }
 
 fn sq<T>(num: T) -> T
-where
-    T: Mul<Output = T> + Copy
+    where
+        T: Mul<Output=T> + Copy
 {
-    num*num
+    num * num
 }
 
 fn dist_squared<T>(pt1: MathVec2<T>, pt2: MathVec2<T>) -> T
-where
-    T: Sub<Output = T> + Add<Output = T> + Mul<Output = T> + Copy
+    where
+        T: Sub<Output=T> + Add<Output=T> + Mul<Output=T> + Copy
 {
-    sq(pt1.x-pt2.x) + sq(pt1.y-pt2.y)
+    sq(pt1.x - pt2.x) + sq(pt1.y - pt2.y)
 }
 
 fn dist<T>(pt1: MathVec2<T>, pt2: MathVec2<T>) -> f64
-where
-    T: Sub<Output = T> + Add<Output = T> + Mul<Output = T> + Copy, f64: From<T>
+    where
+        T: Sub<Output=T> + Add<Output=T> + Mul<Output=T> + Copy, f64: From<T>
 {
     Into::<f64>::into(dist_squared(pt1, pt2)).sqrt()
 }
